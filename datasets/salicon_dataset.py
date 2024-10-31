@@ -17,7 +17,7 @@ class SALICONDataset(Dataset):
         self.image_transform = image_transform
         self.map_transform = map_transform
         self.downloader = downloader or Downloader("./data", "")
-        self.dataset_path = os.path.join(self.downloader._root, "trainSet", "Stimuli")
+        self.dataset_path = os.path.join(self.downloader.root, "trainSet", "Stimuli")
 
         self.downloader(on_complete=self.cache_image_map_paths)
 
