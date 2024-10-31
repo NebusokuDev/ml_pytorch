@@ -1,11 +1,12 @@
-from abc import ABCMeta, abstractmethod
+from abc import abstractmethod, ABC
+
 from torch import Tensor
 from torch.nn import Module
 
-class Model(Module, metaclass=ABCMeta):
 
+class Model(Module, ABC):
     @abstractmethod
-    def forward(self, input_data: Tensor) -> Tensor:
+    def forward(self, input_data: Tensor):
         """
         モデルの順伝播を定義します。
 
@@ -16,4 +17,3 @@ class Model(Module, metaclass=ABCMeta):
             Tensor: モデルからの出力データ。
         """
         pass
-

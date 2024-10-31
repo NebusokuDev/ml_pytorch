@@ -2,7 +2,7 @@ import json
 from abc import ABCMeta, abstractmethod
 from datetime import datetime
 from logging import getLogger, Logger
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import torch
 from torch import Tensor
@@ -24,7 +24,7 @@ YY_MM_DD_FORMAT = "%Y_%m_%d--%hh:%mm"
 
 class TrainerBase(metaclass=ABCMeta):
 
-    def __init__(self, logger, trainee_model: Model):
+    def __init__(self, logger: Optional[Logger], trainee_model: Model):
         self.trainee_model = trainee_model
         self.logger = logger or getLogger(__name__)
         self._trainee_model_device = ""
@@ -33,7 +33,7 @@ class TrainerBase(metaclass=ABCMeta):
     def _setup(self) -> TrainerPropsBase:
         pass
 
-    def train(self, dataloader: DataLoader, criterion: Module, optimizer: Optimizer, device):
+    def train(self, dataloader: DataLoader, criterion: Module, optimizer: Optimizer, device, batch_stride=100):
         history = []
 
         self.trainee_model.train()
@@ -48,6 +48,7 @@ class TrainerBase(metaclass=ABCMeta):
                                                    target_data,
                                                    criterion,
                                                    optimizer)
+
                 history.extend(snapshot)
 
             except Exception as e:
@@ -55,26 +56,33 @@ class TrainerBase(metaclass=ABCMeta):
 
                 raise e
 
-            self.logger.info(f"<batch: #{batch_index}> success!")
+            if batch_index % batch_stride == 0 and batch_index != 0:
+                progress = float(batch_index) / len(dataloader) * 100  # 進捗をパーセント表示
+
+                self.logger.info(
+                    f"\t- [training #{batch_index}] success <progress: {progress:.2f}%> {snapshot}")
 
         return history
 
-    def test(self, dataloader: DataLoader, criterion: Module, device):
+    def test(self, dataloader: DataLoader, criterion: Module, device, batch_stride=100):
         history = []
         self.trainee_model.eval()
         self._transfer_model(device)
 
         with torch.no_grad():
-            for batch_index, (data, target) in enumerate(dataloader):
+            for batch_index, (input_data, target_data) in enumerate(dataloader):
                 try:
-                    snapshot = self._test_scenario(self.trainee_model, device, data, target, criterion)
+                    snapshot = self._test_scenario(self.trainee_model, device, input_data, target_data, criterion)
                     history.extend(snapshot)
                 except Exception as e:
                     self.logger.error(f"Error {e}")
 
                     raise e
 
-                self.logger.info(f"<batch: #{batch_index}> success!")
+                if batch_index % batch_stride == 0 and batch_index != 0:
+                    progress = float(batch_index) / len(dataloader) * 100  # 進捗をパーセント表示
+                    self.logger.info(
+                        f"\t- [test #{batch_index}] success <progress: {progress:.2f}%> {snapshot}")
 
         return history
 
@@ -110,28 +118,33 @@ class TrainerBase(metaclass=ABCMeta):
     def _cleanup(self, device):
         self._release_device_cache(device)
 
-    def learn(self, epoch: int, display_model_info=True) -> (dict[str, Any], dict[str, Any]):
+    def learn(self, epoch: int, display_model_info=True, batch_stride=100) -> (dict[str, Any], dict[str, Any]):
         train_report = []
         test_report = []
 
-        self.logger.info("---leaning start!---")
+        self.logger.info("--- leaning start! ---")
 
         if display_model_info:
-            self.logger.info(summary(self.trainee_model))
+            self.logger.info(f"\n{summary(self.trainee_model)}")
 
-        self.logger.info("---- setup start! ----")
+        self.logger.info("[setup]")
         props = self._setup()
-        self.logger.info("---- setup success!----")
+        self.logger.info("[setup success]")
+        self.logger.info(f"\t- device: {props.device}")
+        self.logger.info(f"\t- criterion: {props.criterion}")
+        self.logger.info(f"\t- optimizer: {type(props.optimizer)}")
+        self.logger.info(f"\t- criterion: {type(props.criterion)}")
+        self.logger.info(f"\t- train_dataloader: <batch size: {props.train_dataloader.batch_size}>")
+        self.logger.info(f"\t- test_dataloader: <batch size: {props.test_dataloader.batch_size}>")
 
         try:
             for epoch_count in range(epoch):
-                self.logger.info(f"[epoch: #{epoch_count + 1:3d}/{epoch}, {(epoch_count + 1) / epoch:.2f}%]")
-                self.logger.info("---- train start! ----")
-                self.train(props.train_dataloader, props.criterion, props.optimizer, props.device)
-                self.logger.info("---- train success! ----")
-                self.logger.info("---- test start! ----")
-                self.test(props.test_dataloader, props.criterion, props.device)
-                self.logger.info("---- test success! ----")
+                self.logger.info(
+                    f"[epoch: #{epoch_count + 1:03d}/{epoch:03d}, total: {(epoch_count + 1) / epoch:.2f}%]")
+                self.logger.info(f"[training: #{epoch_count + 1}]")
+                self.train(props.train_dataloader, props.criterion, props.optimizer, props.device, batch_stride)
+                self.logger.info(f"[test: #{epoch_count + 1}]")
+                self.test(props.test_dataloader, props.criterion, props.device, batch_stride)
 
                 self._release_device_cache(props.device)
         finally:
@@ -148,7 +161,7 @@ class TrainerBase(metaclass=ABCMeta):
 
     def save_report(self, model_name: str, train_report: dict[str, Any], test_report: dict[str, Any]):
         date = datetime.now().strftime(YY_MM_DD_FORMAT)
-        train_report_path = f"./models/{model_name}/{date}-{model_name}_train_report.json"
+        train_report_path = f"./trained_models/{model_name}/{date}-{model_name}_train_report.json"
         test_report_path = f"./models/{model_name}/{date}-{model_name}_test_report.json"
 
         # Save reports to JSON
@@ -170,19 +183,19 @@ class Trainer(TrainerBase):
     def __init__(self,
                  trainee_model: Model,
                  setup: Callable[[], TrainerPropsBase] | Setup,
-                 train_scenario:
+                 training_scenario:
                  Callable[[Model, torch.device, Tensor, Tensor, Module, Optimizer], dict[str, Any]]
                  | TrainingScenario,
                  test_scenario:
                  Callable[[Model, torch.device, Tensor, Tensor, Module], dict[str, Any]]
                  | TestScenario,
                  logger: Logger = None):
-        super().__init__(logger, trainee_model)
+        super().__init__(trainee_model=trainee_model, logger=logger, )
 
-        if train_scenario is TrainingScenario:
-            self.__training_scenario = train_scenario.training
+        if training_scenario is TrainingScenario:
+            self.__training_scenario = training_scenario.training
         else:
-            self.__training_scenario = train_scenario
+            self.__training_scenario = training_scenario
 
         if test_scenario is TestScenario:
             self.__test_scenario = test_scenario.test

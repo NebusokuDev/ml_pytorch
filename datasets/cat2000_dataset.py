@@ -5,6 +5,7 @@ import zipfile
 import glob
 from PIL import Image
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 
 class Cat2000Dataset(Dataset):
@@ -50,7 +51,7 @@ class Cat2000Dataset(Dataset):
                         f.write(chunk)
                         progress.update(len(chunk))
 
-            print("\\nDownload completed.")
+            print("\nDownload completed.")
 
             # ZIPファイルを解凍
             print(f"Unzipping {zip_path}...")
@@ -86,7 +87,7 @@ class Cat2000Dataset(Dataset):
 
     def __getitem__(self, idx: int):
         image_path, map_path = self.image_map_pairs[idx]
-        image, map_image = self.convert_item_to_tensor(image_path, map_path)
+        image, map_image = self.get_raw_item(image_path, map_path)
 
         if self.transform:
             image = self.transform(image)
@@ -94,8 +95,7 @@ class Cat2000Dataset(Dataset):
 
         return image, map_image
 
-    @staticmethod
-    def convert_item_to_tensor(image_path, map_path):
+    def get_raw_item(self, image_path, map_path):
         image = Image.open(image_path).convert("RGB")
         map_image = Image.open(map_path).convert("RGB")
 

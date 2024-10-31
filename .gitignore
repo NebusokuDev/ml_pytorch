@@ -6,6 +6,7 @@ __pycache__/
 
 # downloaded datasets
 assets
+data
 
 # C extensions
 *.so

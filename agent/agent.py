@@ -5,7 +5,7 @@ class AgentBase(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def load_model(self):
+    def load_model(self, path):
         pass
 
     @abstractmethod

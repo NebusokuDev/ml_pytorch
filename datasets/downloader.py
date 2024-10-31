@@ -1,74 +1,87 @@
-import os
-import requests
-from os import path
-from logging import Logger, getLogger
-from typing import Optional
-from tqdm import tqdm
 import zipfile
+from logging import Logger, getLogger
+from os import path
+
+import requests
+from tqdm import tqdm
 
 
 class Downloader:
-    """
-    データセットをダウンロードするためのハンドラ
-    """
+    def __init__(self, url: str, root: str = "", overwrite: bool = True, logger: Logger = None):
+        self._root = root
+        self._overwrite = overwrite
+        self._url = url
+        self._logger = logger or getLogger(__name__)
+        self._extracted_files = []  # 解凍されたファイル名を保持するリスト
 
-    def __init__(self, url: str, download_path: str = "./assets/", overwrite: bool = False,
-                 logger: Optional[Logger] = None):
-        self.logger = logger or getLogger(__name__)
-        self.url = url
-        self.overwrite = overwrite
-        self.download_path = download_path
-        self.downloaded_file_name = ""
-
-    def download(self):
-        if self.is_downloaded() and not self.overwrite:
-            self.logger.info(f"{self.download_path} はすでに存在します。")
-            return
-
-        self.logger.info(f"ダウンロードを開始します: {self.url}")
-
-        try:
-            response = requests.get(self.url, stream=True)
-            response.raise_for_status()  # ステータスコードが200以外の場合、例外を発生させる
-
-            total_size = int(response.headers.get('content-length', 0))
-            with open(self.download_path, 'wb') as f:
-                with tqdm(total=total_size, unit='B', unit_scale=True, desc=self.download_path) as pbar:
-                    for data in response.iter_content(chunk_size=4096):
-                        f.write(data)
-                        pbar.update(len(data))  # ダウンロードしたバイト数を更新
-            self.logger.info(f"{self.download_path} にダウンロード完了。")
-        except requests.HTTPError as e:
-            self.logger.error(f"HTTPエラーが発生しました: {e}")
-        except requests.RequestException as e:
-            self.logger.error(f"ダウンロード中にエラーが発生しました: {e}")
-
-    def unzip(self):
-        if not path.exists(self.download_path):
-            self.logger.error(f"{self.download_path} は存在しません。解凍できません。")
-            return
-
-        extract_path = path.dirname(self.download_path)  # 解凍先を指定
-        try:
-            with zipfile.ZipFile(self.download_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_path)  # 同じディレクトリに解凍
-            self.logger.info(f"{self.download_path} の解凍が完了しました。")
-        except zipfile.BadZipFile:
-            self.logger.error(f"{self.download_path} は無効なZIPファイルです。")
-        except Exception as e:
-            self.logger.error(f"解凍中にエラーが発生しました: {e}")
-
-    def exec(self):
-        self.download()
-        self.unzip()
-
-    def downloaded_path(self) -> str:
-        """ 解凍されたフォルダのパスを取得して返す """
-        rel_path= path.join(self.download_path, self.downloaded_file_name)
-
-        return path.dirname(lel)  # 解凍先のディレクトリパスを返す
+    @property
+    def zip_path(self):
+        return str(path.join(self._root, self.get_filename_from_url()))
 
     def is_downloaded(self) -> bool:
-        result = path.exists(self.download_path)
-        self.logger.info(f"{self.download_path} の存在確認: {result}")
-        return result
+        """データセットがダウンロードされているかを確認"""
+        return path.exists(self.zip_path)
+
+    def file_extracted(self) -> bool:
+        """ファイルが解凍されているかを確認"""
+        return bool(self._extracted_files)  # リストが空でないか確認
+
+    def download(self) -> None:
+        """データセットをダウンロードする"""
+        if self.is_downloaded() and not self._overwrite:
+            self._logger.info(f"Dataset already exists at {self.zip_path}, skipping download.")
+            return
+
+        self._logger.info(f"Downloading dataset from {self._url}...")
+
+        try:
+            response = requests.get(self._url, stream=True)
+            response.raise_for_status()  # HTTPエラーを確認
+            total_size = int(response.headers.get('content-length', 0))
+
+            with tqdm(total=total_size, unit='B', unit_scale=True, dynamic_ncols=True) as progress:
+                with open(self.zip_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=128):
+                        f.write(chunk)
+                        progress.update(len(chunk))
+
+            self._logger.info("\nDownload completed.")
+
+        except requests.exceptions.RequestException as err:
+            self._logger.error(f"Error during download: {err}")
+            
+    def extract(self) -> None:
+        """ZIPファイルを解凍する"""
+        if self.file_extracted() and not self._overwrite:
+            self._logger.info("Files already extracted, skipping extraction.")
+            return
+
+        if not self.is_downloaded():
+            self._logger.error(f"ZIP file not found: {self.zip_path}")
+            return
+
+        self._logger.info(f"Unzipping {self.zip_path}...")
+        try:
+            with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
+                zip_ref.extractall(self._root)
+                self._extracted_files = zip_ref.namelist()  # 解凍したファイル名をリストに保存
+
+            self._logger.info(f"Extracted to {self._root}.")
+
+        except zipfile.BadZipFile:
+            self._logger.error("Error: Bad zip file.")
+        except Exception as e:
+            self._logger.error(f"Error during extraction: {e}")
+
+    def get_filename_from_url(self) -> str:
+        """URLからファイル名を取得する"""
+        return self._url.split("/")[-1]
+
+    def get_extracted_files(self):
+        """解凍されたファイル名を取得する"""
+        return self._extracted_files
+
+    def __call__(self) -> None:
+        """オブジェクトを呼び出すときにダウンロードと解凍を実行する"""
+        self.download()
+        self.extract()

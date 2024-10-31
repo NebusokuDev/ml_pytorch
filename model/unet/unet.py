@@ -1,11 +1,83 @@
-from torch.nn import Module
+from copy import deepcopy
+from typing import Optional
 
-from model.model import Model
+from torch import Module, Tensor
+from torch.nn import Sigmoid
+
+from model.unet.bottleneck import BottleNeck
+from model.unet.decoder import Decoder
+from model.unet.encoder import Encoder
 
 
-class UNet(Model):
-    def __init__(self):
-        super(UNet, self).__init__()
+class UNet(Module):
+    def __init__(self,
+                 encoder1: Optional[Module] = None,
+                 encoder2: Optional[Module] = None,
+                 encoder3: Optional[Module] = None,
+                 encoder4: Optional[Module] = None,
+                 decoder1: Optional[Module] = None,
+                 decoder2: Optional[Module] = None,
+                 decoder3: Optional[Module] = None,
+                 decoder4: Optional[Module] = None,
+                 bottleneck: Optional[Module] = None,
+                 output: Optional[Module] = None,
+                 ):
+        super().__init__()
 
-    def forward(self, input_data):
-        return input_data
+        self.encoder1 = encoder1 or Encoder(in_channels=3, out_channels=64)
+        self.encoder2 = encoder2 or Encoder(in_channels=64, out_channels=128)
+        self.encoder3 = encoder3 or Encoder(in_channels=128, out_channels=256)
+        self.encoder4 = encoder4 or Encoder(in_channels=256, out_channels=512)
+
+        self.bottleneck = bottleneck or BottleNeck(in_channels=512, out_channels=512)
+
+        self.decoder1 = decoder1 or Decoder(in_channels=512, out_channels=256)
+        self.decoder2 = decoder2 or Decoder(in_channels=256, out_channels=128)
+        self.decoder3 = decoder3 or Decoder(in_channels=128, out_channels=64)
+        self.decoder4 = decoder4 or Decoder(in_channels=64, out_channels=3)  # 出力チャンネル数を1に設定
+        self.output = output or Sigmoid()
+
+    def forward(self, input_value: Tensor) -> Tensor:
+        # 各エンコーダを適用
+        enc1 = self.encoder1(input_value)
+        enc2 = self.encoder2(enc1)
+        enc3 = self.encoder3(enc2)
+        enc4 = self.encoder4(enc3)
+
+        # ボトルネックを適用
+        bottleneck_output = self.bottleneck(enc4)
+
+        # スキップ接続を使用して各デコーダを適用
+        dec1 = self.decoder1(bottleneck_output)
+        dec2 = self.decoder2(dec1 + enc3)  # スキップ接続
+        dec3 = self.decoder3(dec2 + enc2)  # スキップ接続
+        dec4 = self.decoder4(dec3 + enc1)  # スキップ接続
+
+        if self.output is None:
+            return dec4
+
+        return self.output(dec4)  # 出力をSigmoidで活性化
+
+    def copy_with(self,
+                  encoder1: Optional[Module] = None,
+                  encoder2: Optional[Module] = None,
+                  encoder3: Optional[Module] = None,
+                  encoder4: Optional[Module] = None,
+                  decoder1: Optional[Module] = None,
+                  decoder2: Optional[Module] = None,
+                  decoder3: Optional[Module] = None,
+                  decoder4: Optional[Module] = None,
+                  bottleneck: Optional[Module] = None,
+                  output: Optional[Module] = None, ) -> "UNet":
+        encoder1 = encoder1 or deepcopy(self.encoder1)
+        encoder2 = encoder2 or deepcopy(self.encoder2)
+        encoder3 = encoder3 or deepcopy(self.encoder3)
+        encoder4 = encoder4 or deepcopy(self.encoder4)
+        decoder1 = decoder1 or deepcopy(self.decoder1)
+        decoder2 = decoder2 or deepcopy(self.decoder2)
+        decoder3 = decoder3 or deepcopy(self.decoder3)
+        decoder4 = decoder4 or deepcopy(self.decoder4)
+        bottleneck = bottleneck or deepcopy(self.bottleneck)
+        output = output or deepcopy(self.output)
+
+        return UNet(encoder1, encoder2, encoder3, encoder4, decoder1, decoder2, decoder3, decoder4, bottleneck, output)

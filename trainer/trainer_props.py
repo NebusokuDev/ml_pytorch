@@ -6,14 +6,11 @@ from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 
-from model.model import Model
-
 
 class TrainerPropsBase:
     @property
     @abstractmethod
     def train_dataloader(self) -> DataLoader:
-        """トレーニングデータローダーを返します。シャッフル設定に基づいてデータを提供します。"""
         pass
 
     @property
