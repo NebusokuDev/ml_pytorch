@@ -1,87 +1,118 @@
+import os
 import zipfile
 from logging import Logger, getLogger
-from os import path
+from typing import Callable
+from urllib.parse import urlparse
 
 import requests
+from requests import Response
 from tqdm import tqdm
 
 
 class Downloader:
-    def __init__(self, url: str, root: str = "", overwrite: bool = True, logger: Logger = None):
+    def __init__(self, root: str, url: str | Callable[[], str] = None, download: bool = True, zip_filename: str = None,
+                 logger: Logger = None):
         self._root = root
-        self._overwrite = overwrite
-        self._url = url
-        self._logger = logger or getLogger(__name__)
-        self._extracted_files = []  # 解凍されたファイル名を保持するリスト
 
-    @property
-    def zip_path(self):
-        return str(path.join(self._root, self.get_filename_from_url()))
+        if isinstance(url, Callable):
+            self.url = url()
+        else:
+            self.url = url
 
-    def is_downloaded(self) -> bool:
-        """データセットがダウンロードされているかを確認"""
-        return path.exists(self.zip_path)
+        self.zip_filename = zip_filename or os.path.basename(urlparse(self.url).path)  # URLからファイル名を取得
+        self.zip_path = os.path.join(self._root, self.zip_filename)
+        self.overwrite = download
+        self.logger = logger or getLogger(__name__)
 
-    def file_extracted(self) -> bool:
-        """ファイルが解凍されているかを確認"""
-        return bool(self._extracted_files)  # リストが空でないか確認
-
-    def download(self) -> None:
+    def download(self):
         """データセットをダウンロードする"""
-        if self.is_downloaded() and not self._overwrite:
-            self._logger.info(f"Dataset already exists at {self.zip_path}, skipping download.")
+        if self.is_exist_zipfile():
+            print(f"Dataset already exists at {self.zip_path}, skipping download.")
             return
 
-        self._logger.info(f"Downloading dataset from {self._url}...")
+        print(f"Downloading dataset from {self.url}...")
 
         try:
-            response = requests.get(self._url, stream=True)
-            response.raise_for_status()  # HTTPエラーを確認
-            total_size = int(response.headers.get('content-length', 0))
+            response = self.request(self.url)
+            self.save_response_content(response, self.zip_path)
 
-            with tqdm(total=total_size, unit='B', unit_scale=True, dynamic_ncols=True) as progress:
-                with open(self.zip_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=128):
-                        f.write(chunk)
-                        progress.update(len(chunk))
+            print("\nDownload completed.")
 
-            self._logger.info("\nDownload completed.")
-
-        except requests.exceptions.RequestException as err:
-            self._logger.error(f"Error during download: {err}")
-            
-    def extract(self) -> None:
-        """ZIPファイルを解凍する"""
-        if self.file_extracted() and not self._overwrite:
-            self._logger.info("Files already extracted, skipping extraction.")
-            return
-
-        if not self.is_downloaded():
-            self._logger.error(f"ZIP file not found: {self.zip_path}")
-            return
-
-        self._logger.info(f"Unzipping {self.zip_path}...")
-        try:
-            with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
-                zip_ref.extractall(self._root)
-                self._extracted_files = zip_ref.namelist()  # 解凍したファイル名をリストに保存
-
-            self._logger.info(f"Extracted to {self._root}.")
+        except requests.exceptions.RequestException as e:
+            print(f"Error during download: {e}")
 
         except zipfile.BadZipFile:
-            self._logger.error("Error: Bad zip file.")
-        except Exception as e:
-            self._logger.error(f"Error during extraction: {e}")
+            print("Error: Bad zip file.")
 
-    def get_filename_from_url(self) -> str:
-        """URLからファイル名を取得する"""
-        return self._url.split("/")[-1]
+    def request(self, url):
+        response = requests.get(url, stream=True)
+        response.raise_for_status()  # HTTPエラーを確認
+        return response
 
-    def get_extracted_files(self):
-        """解凍されたファイル名を取得する"""
-        return self._extracted_files
+    def save_response_content(self, response: Response, destination, chunk_size: int = 4096):
+        with open(destination, "wb") as f:
+            for chunk in tqdm(response.iter_content(chunk_size=chunk_size)):
+                if chunk:
+                    f.write(chunk)
 
-    def __call__(self) -> None:
-        """オブジェクトを呼び出すときにダウンロードと解凍を実行する"""
-        self.download()
-        self.extract()
+    def extract(self):
+        """ZIPファイルを解凍する"""
+        print(f"Unzipping {self.zip_path}...")
+        with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
+            total_files = len(zip_ref.namelist())
+            with tqdm(total=total_files, unit='file') as progress:
+                for file in zip_ref.namelist():
+                    zip_ref.extract(file, self._root)
+                    progress.update(1)
+        print(f"Extracted to {self._root}.")
+
+    @property
+    def root(self):
+        return self._root
+
+    def is_exist_zipfile(self):
+        return os.path.exists(self.zip_path)
+
+    def __call__(self, on_complete: Callable = None):
+        """ダウンロードを実行する"""
+        if self.overwrite or not self.is_exist_zipfile():
+            self.download()
+            try:
+                self.extract()
+            except zipfile.BadZipFile:
+                print("Error: Bad zip file, extraction failed.")
+        else:
+            print("Dataset exists and 'overwrite' is False. No action taken.")
+
+        if on_complete is not None:
+            on_complete()
+
+
+class GoogleDriveDownloader(Downloader):
+    def __init__(self, root: str, file_id: str, download: bool = True):
+        google_drive_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        self.file_id = file_id
+        super().__init__(root, google_drive_url, download)
+
+    def download(self):
+        res = self.request(self.url, self.file_id)
+        self.save_response_content(res, self.root, chunk_size=32768)
+
+    def request(self, url: str, id=None):
+        session = requests.Session()
+
+        response = session.get(url, params={'id': id}, stream=True)
+        token = self.get_confirm_token(response)
+
+        if token:
+            params = {'id': id, 'confirm': token}
+            return session.get(url, params=params, stream=True)
+
+        return response
+
+    def get_confirm_token(self, response):
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                return value
+
+        return None

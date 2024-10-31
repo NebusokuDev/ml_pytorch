@@ -1,6 +1,20 @@
 from typing import Optional
 from torch import Tensor
-from torch.nn import Module, ConvTranspose2d, ReLU
+from torch.ao.nn.quantized import LeakyReLU
+from torch.nn import Module, ConvTranspose2d, ReLU, Conv2d
+
+from model.layer import Layer
+
+
+class DecoderBlock(Layer):
+    def __init__(self, input_ch, output_ch, kernel_size=3):
+        super(DecoderBlock, self).__init__()
+        self.conv = Conv2d(input_ch, output_ch, kernel_size=3, padding=1)
+        self.relu = LeakyReLU()
+
+    def forward(self, data: Tensor):
+        conv = self.conv(data)
+        return self.relu(conv)
 
 
 class Decoder(Module):

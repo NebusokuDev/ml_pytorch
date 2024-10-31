@@ -21,7 +21,7 @@ config.dictConfig(logger_config)
 cnn = MnistCnn()
 
 
-def setup() -> TrainerProps:
+def setup():
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -31,7 +31,7 @@ def setup() -> TrainerProps:
     device = choose_device()
     criterion = CrossEntropyLoss()
     optimizer = optim.Adam(cnn.parameters())
-    return TrainerProps([mnist], device, optimizer, criterion)
+    return
 
 
 def train(model, device, data, target, criterion, optimizer: Optimizer) -> dict[str, Any]:

@@ -30,7 +30,7 @@ class TrainerBase(metaclass=ABCMeta):
         self._trainee_model_device = ""
 
     @abstractmethod
-    def _setup(self) -> TrainerPropsBase:
+    def _setup(self) -> dict | tuple:
         pass
 
     def train(self, dataloader: DataLoader, criterion: Module, optimizer: Optimizer, device, batch_stride=100):
@@ -180,6 +180,7 @@ class TrainerBase(metaclass=ABCMeta):
 
 
 class Trainer(TrainerBase):
+
     def __init__(self,
                  trainee_model: Model,
                  setup: Callable[[], TrainerPropsBase] | Setup,
@@ -191,49 +192,43 @@ class Trainer(TrainerBase):
                  | TestScenario,
                  logger: Logger = None):
         super().__init__(trainee_model=trainee_model, logger=logger, )
-
-        if training_scenario is TrainingScenario:
-            self.__training_scenario = training_scenario.training
-        else:
-            self.__training_scenario = training_scenario
-
-        if test_scenario is TestScenario:
-            self.__test_scenario = test_scenario.test
-        else:
-            self.__test_scenario = test_scenario
-
-        if setup is Setup:
-            self.__setup_method = setup.setup
-        else:
-            self.__setup_method = setup
-
-    def redefine_setup(self, setup_method):
-        self.__setup_method = setup_method
-
-    def redefine_test_scenario(self, test_scenario):
+        self.__training_scenario = training_scenario
         self.__test_scenario = test_scenario
+        self.__setup_method = setup
 
-    def redefine_train_scenario(self, train_scenario):
-        self.__training_scenario = train_scenario
 
-    def _setup(self) -> TrainerPropsBase:
-        return self.__setup_method()
+def redefine_setup(self, setup_method):
+    self.__setup_method = setup_method
 
-    def _training_scenario(self,
-                           model: Model,
-                           device: torch.device,
-                           input_data: Tensor,
-                           target_data: Tensor,
-                           criterion: Module,
-                           optimizer: Optimizer
-                           ) -> dict[str, any]:
-        return self.__training_scenario(model, device, input_data, target_data, criterion, optimizer)
 
-    def _test_scenario(self,
+def redefine_test_scenario(self, test_scenario):
+    self.__test_scenario = test_scenario
+
+
+def redefine_train_scenario(self, train_scenario):
+    self.__training_scenario = train_scenario
+
+
+def _setup(self) -> dict:
+    return self.__setup_method()
+
+
+def _training_scenario(self,
                        model: Model,
-                       device,
+                       device: torch.device,
                        input_data: Tensor,
                        target_data: Tensor,
-                       criterion: Module
+                       criterion: Module,
+                       optimizer: Optimizer
                        ) -> dict[str, any]:
-        return self.__test_scenario(model, device, input_data, target_data, criterion, )
+    return self.__training_scenario(model, device, input_data, target_data, criterion, optimizer)
+
+
+def _test_scenario(self,
+                   model: Model,
+                   device,
+                   input_data: Tensor,
+                   target_data: Tensor,
+                   criterion: Module
+                   ) -> dict[str, any]:
+    return self.__test_scenario(model, device, input_data, target_data, criterion, )
