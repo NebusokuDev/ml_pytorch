@@ -10,10 +10,8 @@ class Model(Module, ABC):
         """
         モデルの順伝播を定義します。
 
-        Args:
-            input_data (Tensor): モデルへの入力データ。
+        :type input_data: Tensor
 
-        Returns:
-            Tensor: モデルからの出力データ。
+        :returns: Tensor
         """
         pass

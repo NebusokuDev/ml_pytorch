@@ -9,7 +9,7 @@ from model.layer import Layer
 class DecoderBlock(Layer):
     def __init__(self, input_ch, output_ch, kernel_size=3):
         super(DecoderBlock, self).__init__()
-        self.conv = Conv2d(input_ch, output_ch, kernel_size=3, padding=1)
+        self.conv = Conv2d(input_ch, output_ch, kernel_size=kernel_size, padding=1)
         self.relu = LeakyReLU()
 
     def forward(self, data: Tensor):

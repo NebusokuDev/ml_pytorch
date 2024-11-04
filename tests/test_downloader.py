@@ -46,7 +46,7 @@ class TestDownloader(unittest.TestCase):
     @patch('os.path.exists', return_value=True)
     def test_is_downloaded(self, mock_exists):
         # ダウンローダーの初期化
-        downloader = Downloader(url="http://example.com/file.zip", root="./test.zip")
+        downloader = Downloader(url="http://example.com/file.zip", root="./tests.zip")
 
         # ファイルが存在するかのテスト
         self.assertTrue(downloader.is_downloaded())
@@ -54,18 +54,18 @@ class TestDownloader(unittest.TestCase):
     @patch('requests.get', side_effect=Exception('Download error'))
     def test_download_error(self, mock_get):
         # ダウンロードで例外が発生した場合のテスト
-        downloader = Downloader(url="http://example.com/file.zip", root="./test.zip", overwrite=True)
+        downloader = Downloader(url="http://example.com/file.zip", root="./tests.zip", overwrite=True)
 
         with patch('builtins.open', mock_open()):
             downloader.download()
             # エラーが発生するためファイルが作成されないことを確認
-            self.assertFalse(os.path.exists("./test.zip"))
+            self.assertFalse(os.path.exists("./tests.zip"))
 
     @patch('os.path.exists', return_value=False)
     @patch('zipfile.ZipFile', side_effect=zipfile.BadZipFile)
     def test_extract_bad_zip(self, mock_zipfile, mock_exists):
         # 無効な ZIP ファイルを解凍する際のエラーテスト
-        downloader = Downloader(url="http://example.com/file.zip", root="./test.zip")
+        downloader = Downloader(url="http://example.com/file.zip", root="./tests.zip")
 
         with self.assertLogs(level='ERROR') as log:
             downloader.extract()

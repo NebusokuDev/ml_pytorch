@@ -1,234 +1,291 @@
-import json
-from abc import ABCMeta, abstractmethod
+from abc import abstractmethod, ABC
 from datetime import datetime
 from logging import getLogger, Logger
-from typing import Any, Callable, Optional
+from os import path, makedirs
+from typing import Optional
 
 import torch
+from pandas import Series, DataFrame
 from torch import Tensor
 from torch.nn import Module
-from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
-from model.model import Model
-from trainer.setup import Setup
-from trainer.test_scenario import TestScenario
-from trainer.trainer_props import TrainerPropsBase
-from trainer.training_senario import TrainingScenario
-
 CPU = "cpu"
+CUDA = "cuda"
 
-YY_MM_DD_FORMAT = "%Y_%m_%d--%hh:%mm"
+YY_MM_DD_FORMAT = "%Y_%m_%d--%H:%M"
 
 
-class TrainerBase(metaclass=ABCMeta):
+class Trainer(ABC):
+    """
+    モデルのトレーニングおよび評価を行うための基本クラス。
 
-    def __init__(self, logger: Optional[Logger], trainee_model: Model):
-        self.trainee_model = trainee_model
+    :param Logger logger: ロギング用のLoggerオブジェクト（指定がない場合はデフォルトのLoggerを使用）。
+    """
+
+    def __init__(self, logger: Optional[Logger] = None):
+        """
+        Trainerのコンストラクタ。
+
+        :param Logger logger: ロギング用のLoggerオブジェクト（指定がない場合はデフォルトのLoggerを使用）。
+        """
         self.logger = logger or getLogger(__name__)
-        self._trainee_model_device = ""
+        self._device: Optional[torch.device] = None
+        self.__models: list[Module] = []
+
+    def register_model(self, *models: Module):
+        for model in models:
+            self.__models.append(model)
 
     @abstractmethod
-    def _setup(self) -> dict | tuple:
+    def _setup_dataloader(self) -> tuple[DataLoader, DataLoader]:
+        """
+        データローダをセットアップするメソッド。
+
+        :return:
+            tuple[train_dataloader, test_dataloader]: トレーニングデータローダとテストデータローダ。
+        """
         pass
 
-    def train(self, dataloader: DataLoader, criterion: Module, optimizer: Optimizer, device, batch_stride=100):
+    def _choose_device(self):
+        """
+        使用可能なデバイス（GPUまたはCPU）を選択するメソッド。
+        """
+        if torch.cuda.is_available():
+            device = torch.device(CUDA)
+            self.logger.info("Using GPU.")
+        else:
+            device = torch.device(CPU)
+            self.logger.info("Using CPU.")
+        return device
+
+    def train(self, dataloader: DataLoader, batch_stride=100, device=None):
+        """
+        モデルをトレーニングするメソッド。
+
+        :param DataLoader dataloader: トレーニングデータのDataLoader。
+        :param int batch_stride: ログ出力の間隔（デフォルトは100）。
+        :param device: モデルを配置するデバイス（指定がない場合は既存のデバイスを使用）。
+        :return: トレーニング履歴のDataFrame。
+        """
         history = []
 
-        self.trainee_model.train()
+        for model in self.__models:
+            model.train()
 
-        self._transfer_model(device)
+        self._device = device or self._device
 
-        for batch_index, (input_data, target_data) in enumerate(dataloader):
+        self._transfer_model(self._device)
+
+        for batch_index, (data, label) in enumerate(dataloader):
             try:
-                snapshot = self._training_scenario(self.trainee_model,
-                                                   device,
-                                                   input_data,
-                                                   target_data,
-                                                   criterion,
-                                                   optimizer)
-
-                history.extend(snapshot)
+                transferred_data, transferred_label = self._transfer_data(data, label)
+                snapshot = self._training_step(transferred_data, transferred_label)
+                snapshot["batches"] = batch_index
+                history.append(snapshot)
 
             except Exception as e:
-                self.logger.error(f"Error during training batch {batch_index}: {e}")
-
+                self.logger.exception(f"Error during training batch {batch_index}: {e}")
                 raise e
+            finally:
+                self._release_device_cache(self._device)
 
             if batch_index % batch_stride == 0 and batch_index != 0:
-                progress = float(batch_index) / len(dataloader) * 100  # 進捗をパーセント表示
+                self._show_progress(batch_index, len(dataloader), snapshot)
 
-                self.logger.info(
-                    f"\t- [training #{batch_index}] success <progress: {progress:.2f}%> {snapshot}")
+        return DataFrame(history)
 
-        return history
+    def test(self, dataloader: DataLoader, batch_stride=100, device: torch.device = None):
+        """
+        モデルを評価するメソッド。
 
-    def test(self, dataloader: DataLoader, criterion: Module, device, batch_stride=100):
+        :param DataLoader dataloader: テストデータのDataLoader。
+        :param int batch_stride: ログ出力の間隔（デフォルトは100）。
+        :param device: モデルを配置するデバイス（指定がない場合は既存のデバイスを使用）。
+        :return: テスト履歴のDataFrame。
+        """
         history = []
-        self.trainee_model.eval()
-        self._transfer_model(device)
+
+        for model in self.__models:
+            model.eval()
+
+        self._device = device or self._device
+        self._transfer_model(self._device)
 
         with torch.no_grad():
-            for batch_index, (input_data, target_data) in enumerate(dataloader):
+            for batch_index, (data, label) in enumerate(dataloader):
                 try:
-                    snapshot = self._test_scenario(self.trainee_model, device, input_data, target_data, criterion)
-                    history.extend(snapshot)
+                    transferred_data, transferred_label = self._transfer_data(data, label)
+                    snapshot = self._test_step(transferred_data, transferred_label)
+                    snapshot["batches"] = batch_index
+                    history.append(snapshot)
                 except Exception as e:
                     self.logger.error(f"Error {e}")
-
                     raise e
+                finally:
+                    self._release_device_cache(self._device)
 
                 if batch_index % batch_stride == 0 and batch_index != 0:
-                    progress = float(batch_index) / len(dataloader) * 100  # 進捗をパーセント表示
-                    self.logger.info(
-                        f"\t- [test #{batch_index}] success <progress: {progress:.2f}%> {snapshot}")
+                    self._show_progress(batch_index, len(dataloader), snapshot)
 
-        return history
+        return DataFrame(history)
+
+    def _show_progress(self, batch_index, total, snapshot):
+        progress = float(batch_index) / total * 100  # 進捗をパーセント表示
+        self.logger.info(f"\t- [test #{batch_index}] success <progress: {progress:.2f}%> {snapshot}")
 
     @abstractmethod
-    def _training_scenario(self,
-                           model: Model,
-                           device: torch.device,
-                           input_data: Tensor,
-                           target_data: Tensor,
-                           criterion: Module,
-                           optimizer: Optimizer
-                           ) -> dict[str, Any]:
+    def _training_step(self, data: Tensor, label: Tensor) -> Series:
+        """
+        トレーニングステップを実行するための抽象メソッド。
+
+        :param Tensor data: 入力データ。
+        :param Tensor label: 対応するラベル。
+        :return: 1エポックのスナップショットとしての結果のSeries。
+        """
         pass
 
     @abstractmethod
-    def _test_scenario(self,
-                       model: Model,
-                       device: torch.device,
-                       input_data: Tensor,
-                       target_data: Tensor,
-                       criterion: Module) -> dict[str, Any]:
+    def _test_step(self, data: Tensor, label: Tensor) -> Series:
+        """
+        テストステップを実行するための抽象メソッド。
+
+        :param Tensor data: 入力データ。
+        :param Tensor label: 対応するラベル。
+        :return: 1エポックのスナップショットとしての結果のSeries。
+        """
         pass
 
     @staticmethod
-    def _release_device_cache(device):
+    def _release_device_cache(device: torch.device):
+        """
+        デバイスのキャッシュを解放するメソッド。
+
+        :param device: 解放するデバイス。
+        """
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    def _transfer_model(self, device):
-        if self._trainee_model_device != device:
-            self._trainee_model_device = self.trainee_model.to(device)
+    def _transfer_model(self, device: torch.device):
+        """
+        モデルを指定されたデバイスに転送するメソッド。
+
+        :param device: 転送先のデバイス。
+        """
+        if self._device != device:
+            for model in self.__models:
+                model.to(device)
+            self._device = device
+
+    def _transfer_data(self, data, label) -> tuple[Tensor, Tensor]:
+        return data.to(self._device), label.to(self._device)
 
     def _cleanup(self, device):
+        """
+        クリーンアップ処理を行うメソッド。
+
+        :param device: クリーンアップするデバイス。
+        """
         self._release_device_cache(device)
 
-    def learn(self, epoch: int, display_model_info=True, batch_stride=100) -> (dict[str, Any], dict[str, Any]):
+    def run(self, epoch: int, batch_stride=100, display_model_info=True) -> tuple[list[DataFrame], list[DataFrame]]:
+        """
+        学習プロセスを実行するメソッド。
+
+        :param int epoch: 学習のエポック数。
+        :param int batch_stride: ログ出力の間隔（デフォルトは100）。
+        :param bool display_model_info: モデルの情報を表示するかどうか（デフォルトはTrue）。
+        :return : トレーニングレポートとテストレポートのリスト。
+        """
         train_report = []
         test_report = []
+
+        (train_dataloader, test_dataloader) = self._setup_dataloader()
+        self._device = self._choose_device()
 
         self.logger.info("--- leaning start! ---")
 
         if display_model_info:
-            self.logger.info(f"\n{summary(self.trainee_model)}")
+            for model in self.__models:
+                self.logger.info(f"\n{summary(model)}")
 
         self.logger.info("[setup]")
-        props = self._setup()
         self.logger.info("[setup success]")
-        self.logger.info(f"\t- device: {props.device}")
-        self.logger.info(f"\t- criterion: {props.criterion}")
-        self.logger.info(f"\t- optimizer: {type(props.optimizer)}")
-        self.logger.info(f"\t- criterion: {type(props.criterion)}")
-        self.logger.info(f"\t- train_dataloader: <batch size: {props.train_dataloader.batch_size}>")
-        self.logger.info(f"\t- test_dataloader: <batch size: {props.test_dataloader.batch_size}>")
 
         try:
             for epoch_count in range(epoch):
                 self.logger.info(
                     f"[epoch: #{epoch_count + 1:03d}/{epoch:03d}, total: {(epoch_count + 1) / epoch:.2f}%]")
                 self.logger.info(f"[training: #{epoch_count + 1}]")
-                self.train(props.train_dataloader, props.criterion, props.optimizer, props.device, batch_stride)
-                self.logger.info(f"[test: #{epoch_count + 1}]")
-                self.test(props.test_dataloader, props.criterion, props.device, batch_stride)
 
-                self._release_device_cache(props.device)
+                train_report.append(self.train(train_dataloader, batch_stride))
+
+                self.logger.info(f"[test: #{epoch_count + 1}]")
+                test_report.append(self.test(test_dataloader, batch_stride))
+
+                self._release_device_cache(self._device)
         finally:
-            self._cleanup(props.device)
+            self._cleanup(self._device)
 
         return train_report, test_report
 
-    def save_model(self, model_name):
+    def save_model(self, model_name, root: str = "trained_model"):
+        """
+        モデルの状態をファイルに保存するメソッド。
+
+        :param str root: 保存するデータのルートディレクトリ
+        :param model_name: 保存するモデルの名前。
+        """
+        for index, model in enumerate(self.__models):
+            date = datetime.now().strftime(YY_MM_DD_FORMAT)
+            save_path = f"./{root}/{model_name}/{date}/{model_name}-{index}.pth"
+
+            # ディレクトリが存在しない場合は作成
+            makedirs(path.dirname(save_path), exist_ok=True)
+            torch.save(model.to(CPU).state_dict(), save_path)
+            self.logger.info(f"Model saved to {save_path}")
+
+    def save_report(self, model_name: str, train_report: list[DataFrame], test_report: list[DataFrame],
+                    root: str = "trained_model"):
+        """
+        学習およびテストのレポートをCSVファイルに保存するメソッド。
+
+        :param str root: レポートを保存するルートディレクトリ
+        :param model_name: レポートを保存するモデルの名前。
+        :param train_report: トレーニングレポートのリスト。
+        :param test_report: テストレポートのリスト。
+        """
         date = datetime.now().strftime(YY_MM_DD_FORMAT)
 
-        save_path = f"./models/{model_name}/{date}-{model_name}.pth"
-        torch.save(self.trainee_model.to(CPU).state_dict(), save_path)
-        self.logger.info(f"Model saved to {save_path}")
+        for i, epoch_report in enumerate(train_report):
+            train_report_path = f"./{root}/{model_name}/{date}/{model_name}_epoch-{i}_train_report.csv"
+            epoch_report.to_csv(train_report_path, index=False)  # CSVに保存
+            self.logger.info(f"Train report saved to {train_report_path}")
 
-    def save_report(self, model_name: str, train_report: dict[str, Any], test_report: dict[str, Any]):
-        date = datetime.now().strftime(YY_MM_DD_FORMAT)
-        train_report_path = f"./trained_models/{model_name}/{date}-{model_name}_train_report.json"
-        test_report_path = f"./models/{model_name}/{date}-{model_name}_test_report.json"
-
-        # Save reports to JSON
-        with open(train_report_path, 'w') as f:
-            json.dump(train_report, f)
-
-        with open(test_report_path, 'w') as f:
-            json.dump(test_report, f)
-
-        self.logger.info(f"Reports saved to {train_report_path} and {test_report_path}")
+        for i, epoch_report in enumerate(test_report):
+            test_report_path = f"./{root}/{model_name}/{date}/{model_name}_epoch-{i}_test_report.csv"
+            epoch_report.to_csv(test_report_path, index=False)  # CSVに保存
+            self.logger.info(f"Test report saved to {test_report_path}")
 
     def build_model(self, model_name, epoch: int):
-        train_report, test_report = self.learn(epoch)
+        """
+        モデルを構築し、学習・評価結果を保存するメソッド。
+
+        :param model_name: モデルの名前。
+        :param epoch: 学習のエポック数。
+        """
+        train_report, test_report = self.run(epoch)
         self.save_report(model_name, train_report, test_report)
         self.save_model(model_name)
 
+    def __call__(self, epoch: int, display_model_info=True, batch_stride=100) -> (list[DataFrame], list[DataFrame]):
+        """
+        Trainerオブジェクトを呼び出して学習プロセスを開始するメソッド。
 
-class Trainer(TrainerBase):
-
-    def __init__(self,
-                 trainee_model: Model,
-                 setup: Callable[[], TrainerPropsBase] | Setup,
-                 training_scenario:
-                 Callable[[Model, torch.device, Tensor, Tensor, Module, Optimizer], dict[str, Any]]
-                 | TrainingScenario,
-                 test_scenario:
-                 Callable[[Model, torch.device, Tensor, Tensor, Module], dict[str, Any]]
-                 | TestScenario,
-                 logger: Logger = None):
-        super().__init__(trainee_model=trainee_model, logger=logger, )
-        self.__training_scenario = training_scenario
-        self.__test_scenario = test_scenario
-        self.__setup_method = setup
-
-
-def redefine_setup(self, setup_method):
-    self.__setup_method = setup_method
-
-
-def redefine_test_scenario(self, test_scenario):
-    self.__test_scenario = test_scenario
-
-
-def redefine_train_scenario(self, train_scenario):
-    self.__training_scenario = train_scenario
-
-
-def _setup(self) -> dict:
-    return self.__setup_method()
-
-
-def _training_scenario(self,
-                       model: Model,
-                       device: torch.device,
-                       input_data: Tensor,
-                       target_data: Tensor,
-                       criterion: Module,
-                       optimizer: Optimizer
-                       ) -> dict[str, any]:
-    return self.__training_scenario(model, device, input_data, target_data, criterion, optimizer)
-
-
-def _test_scenario(self,
-                   model: Model,
-                   device,
-                   input_data: Tensor,
-                   target_data: Tensor,
-                   criterion: Module
-                   ) -> dict[str, any]:
-    return self.__test_scenario(model, device, input_data, target_data, criterion, )
+        :param epoch: 学習のエポック数。
+        :param display_model_info: モデルの情報を表示するかどうか（デフォルトはTrue）。
+        :param batch_stride: ログ出力の間隔（デフォルトは100）。
+        :return: トレーニングレポートとテストレポートのリスト。
+        """
+        return self.run(epoch, batch_stride, display_model_info)

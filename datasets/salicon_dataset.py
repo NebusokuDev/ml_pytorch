@@ -1,31 +1,52 @@
 import glob
-import os
+from os import path
 from typing import Optional, Callable
 
 from PIL import Image
 from torch.utils.data import Dataset
 
-from datasets.downloader import Downloader, GoogleDriveDownloader
+from datasets.downloader import Downloader
 
 
 class SALICONDataset(Dataset):
+
     def __init__(self,
+                 val_mode: bool = True,
                  image_transform: Optional[Callable] = None,
                  map_transform: Optional[Callable] = None,
-                 downloader: Optional[Downloader] = None,
+                 images_downloader: Optional[Downloader] = None,
+                 map_downloader: Optional[Downloader] = None,
                  ):
+
+        self.categories = "val" if val_mode else "train"
+
         self.image_transform = image_transform
         self.map_transform = map_transform
-        self.downloader = downloader or GoogleDriveDownloader("./data", "", zip_filename=".zip")
-        self.dataset_path = os.path.join(self.downloader.root, "trainSet", "Stimuli")
 
-        self.downloader(on_complete=self.cache_image_map_paths)
+        self.images_downloader = images_downloader or Downloader("./data/salicon", "", zip_filename="images.zip",
+                                                                 overwrite=False)
+        self.maps_downloader = map_downloader or Downloader("./data/salicon", "", zip_filename="maps.zip",
+                                                            overwrite=False)
+
+        self.images_downloader()
+        self.maps_downloader()
 
         # 画像とマップのペアを取得
         self.image_map_pair_cache = []
+        self.cache_image_map_paths()
 
     def cache_image_map_paths(self):
-        pass
+        for category in self.categories:
+            images_dir = self.images_downloader.extract_path
+            maps_dir = self.maps_downloader.extract_path
+
+            images_path_list = sorted(glob.glob(path.join(images_dir, category, "*.jpg")))
+            maps_path_list = sorted(glob.glob(path.join(maps_dir, category, "*.png")))
+
+            # ペアリング
+            for img_path, map_path in zip(images_path_list, maps_path_list):
+                if path.basename(img_path) == path.basename(map_path).replace(".png", ".jpg"):
+                    self.image_map_pair_cache.append((img_path, map_path))
 
     def __len__(self):
         return len(self.image_map_pair_cache)

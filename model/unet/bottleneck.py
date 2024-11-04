@@ -1,6 +1,6 @@
 from typing import Optional
-
-from torch import nn, Tensor, Module
+from torch import Tensor
+from torch.nn import Module, Conv2d, ReLU
 
 
 class BottleNeck(Module):
@@ -9,9 +9,9 @@ class BottleNeck(Module):
         self.disable = disable
 
         # 畳み込み層とアクティベーションを定義
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.relu = nn.ReLU(inplace=True)
+        self.conv1 = Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.conv2 = Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.relu = ReLU(inplace=True)
 
     def forward(self, x: Tensor) -> Tensor:
         if self.disable:

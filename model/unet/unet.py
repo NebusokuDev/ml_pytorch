@@ -1,8 +1,9 @@
 from copy import deepcopy
 from typing import Optional
 
-from torch import Module, Tensor
-from torch.nn import Sigmoid
+from torch import Tensor
+from torch.nn import Sigmoid, Module
+from torch.nn.functional import interpolate
 
 from model.unet.bottleneck import BottleNeck
 from model.unet.decoder import Decoder
@@ -37,26 +38,37 @@ class UNet(Module):
         self.decoder4 = decoder4 or Decoder(in_channels=64, out_channels=3)  # 出力チャンネル数を1に設定
         self.output = output or Sigmoid()
 
-    def forward(self, input_value: Tensor) -> Tensor:
-        # 各エンコーダを適用
-        enc1 = self.encoder1(input_value)
-        enc2 = self.encoder2(enc1)
-        enc3 = self.encoder3(enc2)
-        enc4 = self.encoder4(enc3)
+    class UNet(Module):
+        # 省略（__init__は変わらず）
 
-        # ボトルネックを適用
-        bottleneck_output = self.bottleneck(enc4)
+        def forward(self, input_value: Tensor):
+            # 各エンコーダを適用
+            enc1 = self.encoder1(input_value)
+            enc2 = self.encoder2(enc1)
+            enc3 = self.encoder3(enc2)
+            enc4 = self.encoder4(enc3)
 
-        # スキップ接続を使用して各デコーダを適用
-        dec1 = self.decoder1(bottleneck_output)
-        dec2 = self.decoder2(dec1 + enc3)  # スキップ接続
-        dec3 = self.decoder3(dec2 + enc2)  # スキップ接続
-        dec4 = self.decoder4(dec3 + enc1)  # スキップ接続
+            # ボトルネックを適用
+            bottleneck_output = self.bottleneck(enc4)
 
-        if self.output is None:
-            return dec4
+            # スキップ接続を使用して各デコーダを適用
+            # enc3のサイズに合わせてdec1を補間
+            dec1 = self.decoder1(bottleneck_output)
+            dec1_resized = interpolate(dec1, size=enc3.shape[2:], mode="bilinear", align_corners=True)
+            dec2 = self.decoder2(dec1_resized + enc3)  # スキップ接続
 
-        return self.output(dec4)  # 出力をSigmoidで活性化
+            # enc2のサイズに合わせてdec2を補間
+            dec2_resized = interpolate(dec2, size=enc2.shape[2:], mode="bilinear", align_corners=True)
+            dec3 = self.decoder3(dec2_resized + enc2)  # スキップ接続
+
+            # enc1のサイズに合わせてdec3を補間
+            dec3_resized = interpolate(dec3, size=enc1.shape[2:], mode="bilinear", align_corners=True)
+            dec4 = self.decoder4(dec3_resized + enc1)  # スキップ接続
+
+            if self.output is None:
+                return dec4
+
+            return self.output(dec4)  # 出力をSigmoidで活性化
 
     def copy_with(self,
                   encoder1: Optional[Module] = None,
